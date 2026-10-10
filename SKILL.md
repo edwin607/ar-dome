@@ -28,7 +28,11 @@ Pipeline for anchoring a three.js scene to a physical image via [MindAR](https:/
 
 - **Black camera feed**: MindAR injects `<video>` at `z-index:-2`, behind the page background. Fix: `#ar-container video { z-index:0 !important; object-fit:cover }`, canvas `z-index:1`, and `renderer.setClearColor(0x000000, 0)`.
 - **Anchor floating/misaligned**: MindAR computes the projection in `resize()`, which can run before stream dimensions exist. Call `mindarThree.resize()` after `start()` resolves, and again on `orientationchange` (debounced ~300 ms).
-- **Anchor placement**: `anchor.group` origin is target-image center; +x right, +z down the image, units = image width. Position scene content with a small offset group so the augment sits on the artwork's compositional focal point, not dead-center.
+- **Anchor frame (the #1 alignment bug)**: `anchor.group` origin is target-image center, units = image width, and the image lies in the **XY plane** (+x right, +y up the image, **+z out of the canvas toward the camera**). MindAR's postMatrix only translates and scales, with no rotation. A scene authored y-up on an XZ ground plane (like the OrbitControls preview) must sit inside a wrapper group with `rotation.x = Math.PI/2`, or it lies sideways across the painting with half of it behind the canvas. After the wrapper, local +z = down the image. Offset to a focal point: `x = (px - W/2)/W`, `z = (py - H/2)/W`.
+- **Washed-out colors**: MindAR sets `renderer.outputEncoding = sRGBEncoding`, but three r150 leaves `ColorManagement.enabled = false`, so hex material colors get gamma-encoded twice and look pastel. Set `THREE.ColorManagement.enabled = true` before creating materials, and give the preview renderer the same `outputEncoding`.
+- **Target must be frontal**: rectify the photo (four canvas corners → rectangle via OpenCV `getPerspectiveTransform`/`warpPerspective`) to the physical aspect ratio before compiling. A keystoned target tilts the estimated pose.
+- **Filter lag**: keep MindAR's default One Euro settings while validating alignment. A tiny `filterBeta` (e.g. 0.01) makes the anchor trail camera motion, which looks like misalignment.
+- **Verify with a fake camera**: `smoke_test.py --fake-video` needs `--use-fake-device-for-media-stream` or Chromium opens the real webcam. Load the page with `?debug` to draw the tracked target outline.
 - **Camera-denied fallback**: always provide an OrbitControls preview against the target image as ground plane — desktop users and permission denials otherwise dead-end.
 
 ## Files

@@ -21,7 +21,8 @@ def main():
 
     launch = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']
     if args.fake_video:
-        launch += [f'--use-file-for-fake-video-capture={args.fake_video}',
+        launch += ['--use-fake-device-for-media-stream',
+                   f'--use-file-for-fake-video-capture={args.fake_video}',
                    '--use-fake-ui-for-media-stream']
     else:
         launch += ['--use-fake-ui-for-media-stream']

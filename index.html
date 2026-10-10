@@ -39,6 +39,10 @@ import * as THREE from 'three';
 import { mergeBufferGeometries as mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+/* MindAR renders with sRGB output; without color management three r150 treats hex
+   colors as linear and the navy linework comes out washed-out lavender. */
+THREE.ColorManagement.enabled = true;
+
 /* Palette sampled from the artwork */
 const BLUE = 0x2a3670;        /* linework */
 const BLUE_DARK = 0x202860;
@@ -61,20 +65,17 @@ async function gunzip(buf) {
   const { ungzip } = await import('https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.esm.mjs');
   return ungzip(new Uint8Array(buf)).buffer;
 }
-async function loadTarget() {
-  let parts;
-  try {
-    const manifest = await (await fetch('./artwork.mind.manifest.json')).json();
-    parts = manifest.parts;
-  } catch (e) {
-    parts = ['aa', 'ab', 'ac', 'ad', 'ae']; /* fallback */
-  }
+async function loadChunked(prefix, manifestUrl) {
+  const { parts } = await (await fetch(manifestUrl)).json();
   const bufs = await Promise.all(parts.map(async p =>
-    new Uint8Array(await (await fetch('./artwork.mind.gz.' + p)).arrayBuffer())));
+    new Uint8Array(await (await fetch(prefix + '.' + p)).arrayBuffer())));
   const total = bufs.reduce((n, p) => n + p.length, 0);
   const buf = new Uint8Array(total);
   let off = 0; for (const p of bufs) { buf.set(p, off); off += p.length; }
-  const plain = await gunzip(buf);
+  return buf;
+}
+async function loadTarget() {
+  const plain = await gunzip(await loadChunked('./artwork.mind.gz', './artwork.mind.manifest.json'));
   return URL.createObjectURL(new Blob([plain]));
 }
 
@@ -98,6 +99,16 @@ const ROOF_H = 0.13;      /* roof rise above the eave */
 const APEX_R = 0.10;      /* small top ring radius */
 const SIDES = 8;
 const ORBIT = R * 0.55;
+/* Target image is 900x600 (rectified, 3:2). Units = image width, so height = 2/3. */
+const TARGET_H = 600 / 900;
+/* Gazebo base centered on the painting's green dome: pixel (410, 290) in the
+   target → x = (px - W/2) / W, z = (py - H/2) / W  (+z = down the image). */
+const ANCHOR_X = (410 - 450) / 900;
+const ANCHOR_Z = (290 - 300) / 900;
+const PARAMS = new URLSearchParams(location.search);
+const DEBUG = PARAMS.has('debug');
+/* ?scale=0.6 — tune augment size on-device without a redeploy */
+const SCALE = Math.min(Math.max(parseFloat(PARAMS.get('scale')) || 1, 0.1), 3);
 
 function buildScene(scene) {
   const root = new THREE.Group();
@@ -304,8 +315,8 @@ async function startAR() {
   const mindarThree = new MindARThree({
     container: document.querySelector('#ar-container'),
     imageTargetSrc: targetUrl,
-    filterMinCF: 0.001,
-    filterBeta: 0.01,
+    /* MindAR's default One Euro filter settings. A tiny filterBeta (we had 0.01)
+       makes the anchor lag behind camera motion, which reads as misalignment. */
     missTolerance: 10,
     warmupTolerance: 5,
     renderer: { powerPreference: 'high-performance' },
@@ -315,10 +326,26 @@ async function startAR() {
   renderer.setClearColor(0x000000, 0);  /* transparent — camera video must show through */
 
   const anchor = mindarThree.addAnchor(0);
+  /* MindAR's anchor frame: the image lies in the XY plane (+x right, +y up the
+     image), +z points out of the canvas toward the camera. The scene is authored
+     y-up on an XZ ground plane (same as the preview), so stand it up off the canvas:
+     rotating +90° about X maps local +y → out of the canvas, local +z → down the image. */
+  const canvasFrame = new THREE.Group();
+  canvasFrame.rotation.x = Math.PI / 2;
+  anchor.group.add(canvasFrame);
   const A = buildScene(scene);
-  anchor.group.add(A.root);
-  /* dome grows from the painting's green junction node, not dead-center */
-  A.root.position.set(-0.10, 0, -0.05);
+  canvasFrame.add(A.root);
+  A.root.position.set(ANCHOR_X, 0, ANCHOR_Z);
+  A.root.scale.setScalar(SCALE);
+  if (DEBUG) {
+    /* ?debug — outline of the tracked target, drawn in MindAR's native frame */
+    const outline = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, TARGET_H)),
+      new THREE.LineBasicMaterial({ color: 0x00ff88 }));
+    const fill = new THREE.Mesh(new THREE.PlaneGeometry(1, TARGET_H),
+      new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.15, depthWrite: false }));
+    anchor.group.add(outline, fill);
+  }
 
   anchor.onTargetFound = () => hint.classList.add('hidden');
   anchor.onTargetLost = () => hint.classList.remove('hidden');
@@ -340,6 +367,7 @@ function startPreview() {
   hint.textContent = 'Camera unavailable — drag to explore the augment';
   const container = document.querySelector('#ar-container');
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.outputEncoding = THREE.sRGBEncoding;  /* match MindAR's renderer so preview == AR */
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
   renderer.setSize(container.clientWidth, container.clientHeight);
   container.appendChild(renderer.domElement);
@@ -347,11 +375,7 @@ function startPreview() {
   const scene = new THREE.Scene();
   /* the artwork as the ground plane the dome sits on (chunked jpg, reassembled) */
   (async () => {
-    const bufs = await Promise.all(['aa','ab','ac'].map(async p =>
-      new Uint8Array(await (await fetch('./artwork-target.jpg.' + p)).arrayBuffer())));
-    const total = bufs.reduce((n, p) => n + p.length, 0);
-    const buf = new Uint8Array(total);
-    let off = 0; for (const p of bufs) { buf.set(p, off); off += p.length; }
+    const buf = await loadChunked('./artwork-target.jpg', './artwork-target.manifest.json');
     const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
     new THREE.TextureLoader().load(url, tex => {
       tex.encoding = THREE.sRGBEncoding;
@@ -367,11 +391,12 @@ function startPreview() {
   const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 10);
   camera.position.set(0.62, 0.78, 1.05);
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0.02, 0.1, -0.06);
+  controls.target.set(ANCHOR_X, 0.1, ANCHOR_Z);
   controls.enableDamping = true;
 
   const A = buildScene(scene);
-  A.root.position.set(-0.10, 0, -0.05);
+  A.root.position.set(ANCHOR_X, 0, ANCHOR_Z);
+  A.root.scale.setScalar(SCALE);
 
   window.addEventListener('resize', () => {
     camera.aspect = container.clientWidth / container.clientHeight;
