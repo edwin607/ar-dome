@@ -1,0 +1,12 @@
+# Render Blueprint: static site, no build step. Render serves HTTPS, which the camera requires.
+services:
+  - type: web
+    name: ar-dome
+    runtime: static
+    branch: render
+    buildCommand: ""
+    staticPublishPath: .
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
