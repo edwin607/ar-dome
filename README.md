@@ -9,7 +9,7 @@ mouse inside.
 ## How it works
 - [MindAR](https://github.com/hiukim/mind-ar) image tracking (three.js build, pinned to three@0.150.1) anchors the scene to the artwork.
 - `artwork.mind.gz.*` — the compiled image target, gzipped and chunked; the page reassembles and decompresses it in-browser (`DecompressionStream`, pako fallback).
-- Gazebo struts are tubes matching the painting's stroke weight, colored from the sampled linework blue (`#2a3670`); mustard junction accents.
+- Open-fronted pavilion of thin tubes in the sampled linework blue (`#2a3670`), matching the artist's rendered mockup: pillars straight off the canvas, eave ring, rafters to a flat top ring.
 - Camera + HTTPS required — open on a phone for AR. Camera denied (or desktop) → orbit-controls preview against the artwork.
 
 ## Repository layout
@@ -23,7 +23,7 @@ mouse inside.
 1. Crop the new artwork photo tight to its edges, ≤ ~900px long side → `artwork-target.jpg`
 2. `uv run --with playwright python tools/compile_target.py artwork-target.jpg --out artwork.mind`
 3. `gzip -9 -c artwork.mind > artwork.mind.gz && python tools/chunk.py artwork.mind.gz artwork.mind.gz --manifest artwork.mind.manifest.json`
-4. Rectify first if the photo has any perspective: warp the 4 canvas corners to the physical aspect ratio (current target: 900×600, a 3:2 / 6×4" canvas)
+4. Rectify first if the photo has any perspective: warp the 4 canvas corners to the physical aspect ratio (current target: 900×643, a 7×5" canvas)
 5. Update `TARGET_H` and the focal-point pixel in `ANCHOR_X` / `ANCHOR_Z` in `index.html`; `python tools/chunk.py artwork-target.jpg artwork-target.jpg --manifest artwork-target.manifest.json`
 6. `uv run --with playwright python tools/smoke_test.py <url> --fake-video cam.y4m --shot out.png`, require `errors: none`; add `?debug` to the URL to see the tracked outline
 

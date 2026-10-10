@@ -45,9 +45,6 @@ THREE.ColorManagement.enabled = true;
 
 /* Palette sampled from the artwork */
 const BLUE = 0x2a3670;        /* linework */
-const BLUE_DARK = 0x202860;
-const RED = 0xc8503c;
-const MUSTARD = 0xc9922e;
 const GREEN = 0x5bbf8a;
 
 const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -90,21 +87,24 @@ function mulberry32(seed) {
 }
 
 /* ---------- scene shared by AR and fallback preview ----------
-   Gazebo form from the artist's sketch: vertical pillars on a base ring,
-   two horizontal eave bands, and a faceted hip roof rising to a small apex ring. */
-const R = 0.30;           /* base radius relative to target width */
-const STROKE = 0.011;     /* stroke thickness — matches the artwork's heavy blue lines */
+   Pavilion form from the artist's rendered mockup: an open-fronted ring of thin
+   navy struts. Pillars stand straight off the canvas to an eave ring, rafters
+   slope in to a flat top ring, and the side facing the viewer (+z, the bottom
+   of the painting) is left open. */
+const R = 0.36;           /* eave radius relative to target width (spans most of the canvas) */
+const STROKE = 0.0075;    /* strut radius — even weight, like the painting's marker lines */
 const WALL_H = 0.20;      /* pillar height */
-const ROOF_H = 0.13;      /* roof rise above the eave */
-const APEX_R = 0.10;      /* small top ring radius */
-const SIDES = 8;
+const ROOF_H = 0.10;      /* roof rise above the eave */
+const APEX_R = 0.21;      /* flat top ring radius */
+const SIDES = 10;
+const OPEN_SIDES = 3;     /* sides removed on the viewer-facing front */
 const ORBIT = R * 0.55;
-/* Target image is 900x600 (rectified, 3:2). Units = image width, so height = 2/3. */
-const TARGET_H = 600 / 900;
+/* Target image is 900x643 (rectified, 7:5 canvas). Units = image width. */
+const TARGET_H = 643 / 900;
 /* Gazebo base centered on the painting's green dome: pixel (410, 290) in the
    target → x = (px - W/2) / W, z = (py - H/2) / W  (+z = down the image). */
 const ANCHOR_X = (410 - 450) / 900;
-const ANCHOR_Z = (290 - 300) / 900;
+const ANCHOR_Z = (311 - 321.5) / 900;
 const PARAMS = new URLSearchParams(location.search);
 const DEBUG = PARAMS.has('debug');
 /* ?scale=0.6 — tune augment size on-device without a redeploy */
@@ -123,76 +123,61 @@ function buildScene(scene) {
   rim.position.set(-0.8, 0.5, -0.6);
   scene.add(rim);
 
-  const domeMat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.85, metalness: 0, flatShading: true });
-  const mustardMat = new THREE.MeshStandardMaterial({ color: MUSTARD, roughness: 0.85, metalness: 0, flatShading: true });
+  const domeMat = new THREE.MeshStandardMaterial({ color: BLUE, roughness: 0.6, metalness: 0, flatShading: true });
 
   const rand = mulberry32(20261010);
-
-  /* gazebo skeleton: vertices at base / eave / apex rings */
   const jitter = (amp) => (rand() - 0.5) * amp;
-  const base = [], eave = [], apex = [];
-  for (let i = 0; i < SIDES; i++) {
-    const a = (i / SIDES) * Math.PI * 2;
-    const rb = R * (1 + jitter(0.05));
-    base.push(new THREE.Vector3(Math.cos(a) * rb, 0, Math.sin(a) * rb));
-    const re = R * (1 + jitter(0.04));
-    eave.push(new THREE.Vector3(Math.cos(a) * re, WALL_H * (1 + jitter(0.06)), Math.sin(a) * re));
-    const ra = APEX_R * (1 + jitter(0.08));
-    apex.push(new THREE.Vector3(Math.cos(a) * ra, WALL_H + ROOF_H * (1 + jitter(0.08)), Math.sin(a) * ra));
-  }
 
-  /* merge every strut + node into ONE geometry (one draw call) */
+  /* ring vertices; angle 90° (+z) faces the viewer, so the open gap is centered there */
+  const eave = [], apex = [];
+  for (let i = 0; i < SIDES; i++) {
+    const a = Math.PI / 2 + ((i + 0.5) / SIDES) * Math.PI * 2;
+    const re = R * (1 + jitter(0.03));
+    eave.push(new THREE.Vector3(Math.cos(a) * re, WALL_H, Math.sin(a) * re));
+    const ra = APEX_R * (1 + jitter(0.04));
+    apex.push(new THREE.Vector3(Math.cos(a) * ra, WALL_H + ROOF_H, Math.sin(a) * ra));
+  }
+  /* edge i joins vertex i → i+1; the OPEN_SIDES edges straddling the front are dropped */
+  const isOpen = (e) => {
+    const k = ((e - (SIDES - 1)) % SIDES + SIDES) % SIDES;   /* edge SIDES-1 sits dead-front */
+    const d = Math.min(k, SIDES - k);
+    return d <= (OPEN_SIDES - 1) / 2;
+  };
+
+  /* merge every strut + joint into ONE geometry (one draw call) */
   const geos = [];
   const up = new THREE.Vector3(0, 1, 0);
-  function strut(a, b, weight = 1) {
-    const r = STROKE * weight * (0.8 + rand() * 0.4);   /* hand-drawn weight variance */
-    const g = new THREE.CylinderGeometry(r, r, a.distanceTo(b), 6, 1, false).toNonIndexed();
+  function strut(a, b) {
+    const g = new THREE.CylinderGeometry(STROKE, STROKE, a.distanceTo(b), 8, 1, false).toNonIndexed();
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion().setFromUnitVectors(up, b.clone().sub(a).normalize());
     m.compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
     g.applyMatrix4(m);
     geos.push(g);
   }
-  const mustardNodes = [];
-  function node(p, accent) {
-    const g = new THREE.IcosahedronGeometry(STROKE * 1.7, 0).toNonIndexed();
+  function joint(p) {   /* small sphere so mitred corners read as one bent rod */
+    const g = new THREE.SphereGeometry(STROKE, 8, 6).toNonIndexed();
     g.translate(p.x, p.y, p.z);
-    if (accent) { const mesh = new THREE.Mesh(g, mustardMat); mustardNodes.push(mesh); root.add(mesh); }
-    else geos.push(g);
+    geos.push(g);
   }
-
-  const accentIdx = new Set();
-  while (accentIdx.size < 3) accentIdx.add(Math.floor(rand() * SIDES));
 
   for (let i = 0; i < SIDES; i++) {
     const j = (i + 1) % SIDES;
-    strut(base[i], eave[i]);                 /* pillar */
-    strut(eave[i], eave[j]);                 /* eave band */
-    strut(eave[i], apex[i]);                 /* rafter */
-    strut(apex[i], apex[j], 0.9);            /* apex ring */
-    strut(base[i], base[j]);                 /* base ring */
-    if (i % 2 === 0) strut(base[i], eave[j], 0.7);  /* light diagonal braces, alternating */
-    node(eave[i], accentIdx.has(i));         /* junction caps at the eave */
+    const used = !isOpen(i) || !isOpen((i - 1 + SIDES) % SIDES);
+    if (used) {
+      strut(new THREE.Vector3(eave[i].x, 0, eave[i].z), eave[i]);   /* pillar, straight off the canvas */
+      strut(eave[i], apex[i]);                                      /* rafter */
+      joint(eave[i]); joint(apex[i]);
+    }
+    if (!isOpen(i)) {
+      strut(eave[i], eave[j]);                                      /* eave ring */
+      strut(apex[i], apex[j]);                                      /* top ring */
+    }
   }
 
   const dome = new THREE.Group();
   dome.add(new THREE.Mesh(mergeGeometries(geos, false), domeMat));
-
-  /* faint roof shell so the volume reads */
-  const roofShell = new THREE.Mesh(
-    new THREE.ConeGeometry(R * 1.0, ROOF_H, SIDES, 1, true),
-    new THREE.MeshStandardMaterial({ color: BLUE, transparent: true, opacity: 0.07, flatShading: true, side: THREE.DoubleSide, depthWrite: false })
-  );
-  roofShell.position.y = WALL_H + ROOF_H / 2;
-  dome.add(roofShell);
   root.add(dome);
-
-  const floor = new THREE.Mesh(
-    new THREE.CircleGeometry(R * 0.96, SIDES * 2),
-    new THREE.MeshBasicMaterial({ color: BLUE_DARK, transparent: true, opacity: 0.18, depthWrite: false })
-  );
-  floor.rotation.x = -Math.PI / 2; floor.position.y = 0.001;
-  root.add(floor);
 
   /* ---------- cat (blue linework = structure/predator) ---------- */
   function makeCat() {
